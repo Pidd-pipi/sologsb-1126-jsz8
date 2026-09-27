@@ -18,8 +18,8 @@ import { FACTOR_META, NORMALIZE_LABELS } from '@/types/score'
 import { ASPECT_TYPES, SURFACE_TYPES, ACCESS_MODES } from '@/types/campsite'
 import type { AspectType, AccessMode, SurfaceType } from '@/types/campsite'
 import type { Grade } from '@/utils/score'
-import type { RockfallRisk, WindDir, WindForce } from '@/types/factor'
-import { ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
+import type { RockfallRisk, WindDir, WindForce, FactorAssessment, FactorStatus } from '@/types/factor'
+import { FACTOR_STATUS_LABELS, ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
 import { VETO_TYPES, VETO_HINTS } from '@/types/veto'
 import type { VetoType } from '@/types/veto'
 import { formatDate, formatDateTime, todayIso } from '@/utils/format'
@@ -36,7 +36,7 @@ const site = computed(() => siteStore.byId(siteId.value))
 
 const { scoreOf } = useRanking({
   sites: () => siteStore.list,
-  factorOf: (id: number) => siteStore.latestFactor(id),
+  factorOf: (id: number) => siteStore.adoptedFactor(id),
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
@@ -55,6 +55,10 @@ function openSite(id: number): void {
 }
 const grade = computed(() => scoreRow.value?.grade ?? 'C')
 const factorHistory = computed(() => siteStore.factorsOf(siteId.value))
+const pendingHistory = computed(() => siteStore.pendingFactors(siteId.value))
+/** 当前参与算分的那份已采用记录（没有时为 null，评分走保守缺省值）。 */
+const adoptedFactorRow = computed(() => siteStore.adoptedFactor(siteId.value))
+const currentAdoptedId = computed(() => adoptedFactorRow.value?.id ?? null)
 const vetoList = computed(() => uiStore.vetosOf(siteId.value))
 
 /* --------------------------- 多轮因子复核录入 --------------------------- */
@@ -74,18 +78,20 @@ const factorForm = reactive({
 })
 
 function prefillFactor(): void {
-  const latest = siteStore.latestFactor(siteId.value)
-  if (latest) {
-    factorForm.waterDistance = latest.waterDistance
-    factorForm.windDir = latest.windDir
-    factorForm.windForce = latest.windForce
-    factorForm.signalBars = latest.signalBars
-    factorForm.sunHours = latest.sunHours
-    factorForm.rockfallRisk = latest.rockfallRisk
-    factorForm.shade = latest.shade
-    factorForm.distanceToCar = latest.distanceToCar
-    factorForm.distanceToTrail = latest.distanceToTrail
-    factorForm.assessor = latest.assessor
+  // 预填参考当前已采用的一份；没有已采用记录时保留表单默认值，
+  // 避免把待审核 / 已退回的数值当成基线复制进新表单。
+  const base = siteStore.adoptedFactor(siteId.value)
+  if (base) {
+    factorForm.waterDistance = base.waterDistance
+    factorForm.windDir = base.windDir
+    factorForm.windForce = base.windForce
+    factorForm.signalBars = base.signalBars
+    factorForm.sunHours = base.sunHours
+    factorForm.rockfallRisk = base.rockfallRisk
+    factorForm.shade = base.shade
+    factorForm.distanceToCar = base.distanceToCar
+    factorForm.distanceToTrail = base.distanceToTrail
+    factorForm.assessor = base.assessor
   }
   factorForm.assessedAt = todayIso()
 }
@@ -110,18 +116,88 @@ async function submitFactor(): Promise<void> {
       updatedAt: ''
     })
     showFactorForm.value = false
-    ElMessage.success('已追加一轮因子评估，名次与等级同步刷新')
+    ElMessage.success('本轮评估已提交，进入待审核；复核采用前名次与详情评分保持不变')
   } catch (err) {
     ElMessage.error(`追加失败：${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
+/* ------------------------------ 复核审核流 ------------------------------ */
+const reviewVisible = ref(false)
+const reviewTarget = ref<FactorAssessment | null>(null)
+const reviewDecision = ref<Extract<FactorStatus, 'adopted' | 'rejected'>>('adopted')
+const reviewForm = reactive({
+  reviewer: '',
+  comment: ''
+})
+
+function openReview(row: FactorAssessment, decision: 'adopted' | 'rejected'): void {
+  reviewTarget.value = row
+  reviewDecision.value = decision
+  // 复核人默认带上一次署名，意见留空强制填写
+  reviewForm.reviewer = reviewForm.reviewer || lastReviewer.value
+  reviewForm.comment = ''
+  reviewVisible.value = true
+}
+
+/** 历史中最近一次复核署名，作为下一次审核的默认复核人。 */
+const lastReviewer = computed(() => {
+  for (const f of factorHistory.value) {
+    if (f.reviewer) return f.reviewer
+  }
+  return ''
+})
+
+const reviewTitle = computed(() =>
+  reviewDecision.value === 'adopted' ? '采用本轮评估' : '退回本轮评估'
+)
+
+async function submitReview(): Promise<void> {
+  const target = reviewTarget.value
+  const targetId = target?.id
+  if (typeof targetId !== 'number') return
+  const reviewer = reviewForm.reviewer.trim()
+  const comment = reviewForm.comment.trim()
+  if (!reviewer) {
+    ElMessage.warning('请填写复核人')
+    return
+  }
+  if (!comment) {
+    ElMessage.warning(reviewDecision.value === 'adopted' ? '请填写采用意见' : '请填写退回意见')
+    return
+  }
+  try {
+    await siteStore.reviewFactor(targetId, reviewDecision.value, reviewer, comment)
+    reviewVisible.value = false
+    ElMessage.success(
+      reviewDecision.value === 'adopted'
+        ? '已采用，名次表、地图与详情评分改按本轮记录计算'
+        : '已退回，该记录仅保留在复核历史中'
+    )
+  } catch (err) {
+    ElMessage.error(`审核失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+function statusTagType(status: FactorStatus): 'warning' | 'success' | 'info' {
+  if (status === 'pending') return 'warning'
+  if (status === 'adopted') return 'success'
+  return 'info'
+}
+
+/** 已退回记录整行置灰，提示其仅留历史、不参与任何计算。 */
+function factorRowClass({ row }: { row: FactorAssessment }): string {
+  return row.status === 'rejected' ? 'rejected-row' : ''
+}
+
 async function removeFactor(id: number | undefined): Promise<void> {
   if (typeof id !== 'number') return
   try {
-    await ElMessageBox.confirm('确认删除这一轮因子评估？删除后名次会立即重算。', '提示', {
-      type: 'warning'
-    })
+    await ElMessageBox.confirm(
+      '确认删除这一轮因子评估？若删除的是当前采用中的记录，名次将回落到上一份已采用记录或缺省值。',
+      '提示',
+      { type: 'warning' }
+    )
     await siteStore.removeFactor(id)
     ElMessage.success('已删除该轮评估')
   } catch {
@@ -259,6 +335,26 @@ watch(
       :description="vetoList.map((v) => `${v.type}：${v.description}`).join(' ｜ ')"
     />
 
+    <el-alert
+      v-if="pendingHistory.length"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="pending-alert"
+      :title="`有 ${pendingHistory.length} 轮评估待审核（最新一轮 ${pendingHistory[0].assessedAt} · ${pendingHistory[0].assessor}）`"
+      description="当前名次、地图着色与下方评分仍使用最近一份已采用记录；请在下方复核表填写复核人与意见后采用或退回。"
+    />
+
+    <el-alert
+      v-if="!adoptedFactorRow"
+      type="info"
+      show-icon
+      :closable="false"
+      class="pending-alert"
+      title="该营位还没有已采用的评估记录"
+      description="综合得分暂按系统缺省值保守计算；待审核记录不会顶替缺省值，复核采用后才以实测数据算分。"
+    />
+
     <MapPanel
       :sites="siteStore.list"
       :selected-id="siteId"
@@ -287,9 +383,11 @@ watch(
         <div class="stat-card__extra">{{ formatLat(site.lat) }}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-card__label">评估轮次</div>
+        <div class="stat-card__label">评估记录</div>
         <div class="stat-card__value">{{ factorHistory.length }}</div>
-        <div class="stat-card__extra">否决项 {{ vetoList.length }} 条</div>
+        <div class="stat-card__extra">
+          待审核 {{ pendingHistory.length }} · 否决 {{ vetoList.length }} 条
+        </div>
       </div>
     </div>
 
@@ -397,8 +495,13 @@ watch(
         />
       </div>
       <p class="panel__hint">
-        当前名次所用因子来自最新一轮评估（{{ siteStore.latestFactor(siteId)?.assessedAt ?? '暂无' }}，
-        评估人 {{ siteStore.latestFactor(siteId)?.assessor ?? '—' }}）。
+        <template v-if="adoptedFactorRow">
+          当前名次所用因子来自已采用记录（{{ adoptedFactorRow.assessedAt }}，
+          评估人 {{ adoptedFactorRow.assessor }}，复核人 {{ adoptedFactorRow.reviewer }}）。
+        </template>
+        <template v-else>
+          暂无已采用的评估记录，当前按系统缺省值保守算分；待审核记录不会顶替缺省值。
+        </template>
       </p>
     </section>
 
@@ -419,6 +522,9 @@ watch(
           {{ showFactorForm ? '收起录入' : '追加一轮评估' }}
         </el-button>
       </div>
+      <p class="panel__hint" style="margin: 0 0 10px">
+        新提交的评估先进入「待审核」，不影响名次；采用后旧记录保留但不再参与计算，退回记录仅留历史。
+      </p>
 
       <el-form v-if="showFactorForm" label-width="112px" class="review-form" @submit.prevent>
         <div class="form-grid">
@@ -517,38 +623,87 @@ watch(
         </el-form-item>
       </el-form>
 
-      <el-table v-if="factorHistory.length" :data="factorHistory" size="small" border>
+      <el-table v-if="factorHistory.length" :data="factorHistory" size="small" border :row-class-name="factorRowClass">
         <el-table-column label="序号" width="64" type="index" />
-        <el-table-column prop="assessedAt" label="评估日期" width="118">
+        <el-table-column label="评估日期" width="112">
           <template #default="{ row }">{{ formatDate(row.assessedAt) }}</template>
         </el-table-column>
-        <el-table-column prop="assessor" label="评估人" width="110" />
-        <el-table-column label="水源" width="90">
+        <el-table-column prop="assessor" label="评估人" width="96" />
+        <el-table-column label="状态" width="150">
+          <template #default="{ row }">
+            <el-tag :type="statusTagType(row.status)" size="small">
+              {{ FACTOR_STATUS_LABELS[row.status as FactorStatus] }}
+            </el-tag>
+            <el-tag
+              v-if="row.status === 'adopted' && row.id === currentAdoptedId"
+              type="success"
+              size="small"
+              effect="dark"
+              class="ml6"
+            >
+              采用中
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="水源" width="84">
           <template #default="{ row }">{{ row.waterDistance }} m</template>
         </el-table-column>
-        <el-table-column label="风向 / 风力" width="130">
+        <el-table-column label="风向 / 风力" width="120">
           <template #default="{ row }">{{ row.windDir }} {{ row.windForce }} 级</template>
         </el-table-column>
-        <el-table-column label="信号" width="80">
+        <el-table-column label="信号" width="72">
           <template #default="{ row }">{{ row.signalBars }} 格</template>
         </el-table-column>
-        <el-table-column label="日照" width="86">
+        <el-table-column label="日照" width="80">
           <template #default="{ row }">{{ row.sunHours }} h</template>
         </el-table-column>
-        <el-table-column label="落石落枝" width="100">
+        <el-table-column label="落石落枝" width="90">
           <template #default="{ row }">{{ row.rockfallRisk }}</template>
         </el-table-column>
-        <el-table-column label="遮蔽度" width="88">
+        <el-table-column label="遮蔽度" width="80">
           <template #default="{ row }">{{ row.shade }}</template>
         </el-table-column>
-        <el-table-column label="离车 / 离步道" width="140">
+        <el-table-column label="离车 / 离步道" width="132">
           <template #default="{ row }">{{ row.distanceToCar }} / {{ row.distanceToTrail }} m</template>
         </el-table-column>
-        <el-table-column label="录入时间" width="150">
+        <el-table-column label="复核信息" min-width="220">
+          <template #default="{ row }">
+            <template v-if="row.status === 'pending'">
+              <span class="muted">待复核人处理</span>
+            </template>
+            <template v-else>
+              <div class="review-cell">
+                <span class="review-cell__head">
+                  {{ row.reviewer || '—' }} · {{ row.reviewedAt ? formatDateTime(row.reviewedAt) : '—' }}
+                </span>
+                <span class="review-cell__comment">{{ row.reviewComment || '—' }}</span>
+              </div>
+            </template>
+          </template>
+        </el-table-column>
+        <el-table-column label="录入时间" width="146">
           <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'pending'"
+              size="small"
+              text
+              type="success"
+              @click="openReview(row, 'adopted')"
+            >
+              采用
+            </el-button>
+            <el-button
+              v-if="row.status === 'pending'"
+              size="small"
+              text
+              type="warning"
+              @click="openReview(row, 'rejected')"
+            >
+              退回
+            </el-button>
             <el-button size="small" text type="danger" @click="removeFactor(row.id)">删除</el-button>
           </template>
         </el-table-column>
@@ -616,6 +771,53 @@ watch(
         </el-form-item>
       </el-form>
     </section>
+
+    <el-dialog v-model="reviewVisible" :title="reviewTitle" width="520px">
+      <div v-if="reviewTarget" class="review-target">
+        <el-tag :type="statusTagType(reviewTarget.status)" size="small">
+          {{ FACTOR_STATUS_LABELS[reviewTarget.status] }}
+        </el-tag>
+        <span class="weight-note">
+          {{ formatDate(reviewTarget.assessedAt) }} · 评估人 {{ reviewTarget.assessor }} ·
+          水源 {{ reviewTarget.waterDistance }} m · 风力 {{ reviewTarget.windForce }} 级 ·
+          信号 {{ reviewTarget.signalBars }} 格
+        </span>
+      </div>
+      <el-alert
+        class="review-tip"
+        :type="reviewDecision === 'adopted' ? 'success' : 'warning'"
+        :closable="false"
+        show-icon
+        :title="
+          reviewDecision === 'adopted'
+            ? '采用后：名次表、地图与详情评分改按本轮记录计算，此前已采用的旧记录保留但不再参与计算。'
+            : '退回后：本轮记录仅保留在复核历史中，不参与任何计算。'
+        "
+      />
+      <el-form label-width="84px" @submit.prevent>
+        <el-form-item label="复核人" required>
+          <el-input id="review-reviewer" v-model="reviewForm.reviewer" placeholder="如 周勘" />
+        </el-form-item>
+        <el-form-item :label="reviewDecision === 'adopted' ? '采用意见' : '退回意见'" required>
+          <el-input
+            id="review-comment"
+            v-model="reviewForm.comment"
+            type="textarea"
+            :rows="3"
+            :placeholder="reviewDecision === 'adopted' ? '如 现场复测数值可信，予以采用。' : '如 水源距离与现场不符，请重新测量后提交。'"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reviewVisible = false">取消</el-button>
+        <el-button
+          :type="reviewDecision === 'adopted' ? 'success' : 'warning'"
+          @click="submitReview"
+        >
+          确认{{ reviewDecision === 'adopted' ? '采用' : '退回' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 
   <div v-else class="page">
@@ -646,5 +848,42 @@ watch(
 }
 .review-form {
   margin-bottom: 12px;
+}
+.pending-alert {
+  margin-bottom: 12px;
+}
+.ml6 {
+  margin-left: 6px;
+}
+.review-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.review-cell__head {
+  font-size: 12px;
+  color: var(--gb-ink);
+}
+.review-cell__comment {
+  font-size: 12px;
+  color: var(--gb-muted);
+  line-height: 1.5;
+}
+.review-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.review-tip {
+  margin-bottom: 14px;
+}
+:deep(.rejected-row) {
+  color: var(--gb-muted);
+  background: #fafafa !important;
+}
+:deep(.el-table .rejected-row:hover > td) {
+  background: #f3f3f3 !important;
 }
 </style>

@@ -53,7 +53,7 @@ watch(
 
 const { ranked, best } = useRanking({
   sites: () => siteStore.list,
-  factorOf: (id: number) => siteStore.latestFactor(id),
+  factorOf: (id: number) => siteStore.adoptedFactor(id),
   weights: () => uiStore.workingWeights,
   normalize: () => uiStore.workingNormalize,
   thresholds: () => uiStore.workingThresholds,
@@ -216,6 +216,15 @@ async function removeProfileRow(id: number | undefined): Promise<void> {
         <el-button type="primary" @click="openSaveDialog">另存为季节方案</el-button>
       </div>
     </div>
+
+    <el-alert
+      v-if="siteStore.pendingCount > 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 12px"
+      :title="`有 ${siteStore.pendingCount} 轮评估待审核；本页名次仅基于已采用记录，调权重不会提前消费待审核数据。`"
+    />
 
     <div class="stat-row">
       <div class="stat-card">

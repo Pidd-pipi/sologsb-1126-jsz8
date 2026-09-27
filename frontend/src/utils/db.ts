@@ -5,6 +5,7 @@
  *   v1 建 sites / factors 两张表
  *   v2 新增 profiles 表，并为 factors 补 siteId 索引
  *   v3 新增 vetos 表，并为存量营位回填默认权重方案
+ *   v4 factors 增加审核状态：待审核 / 已采用 / 已退回；存量记录视为已采用
  */
 import Dexie, { type Table } from 'dexie'
 import type { Campsite } from '@/types/campsite'
@@ -15,7 +16,7 @@ import type { RiskVeto } from '@/types/veto'
 
 export const DB_NAME = 'gbcampsite-db'
 /** 当前数据结构版本号 */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 
 export class GbCampsiteDatabase extends Dexie {
   sites!: Table<Campsite, number>
@@ -72,6 +73,29 @@ export class GbCampsiteDatabase extends Dexie {
             if (typeof s.note !== 'string') s.note = ''
             if (typeof s.flatness !== 'number') s.flatness = 70
             if (typeof s.tentCapacity !== 'number') s.tentCapacity = 1
+          })
+      })
+
+    // v4：因子评估增加审核流。新记录一律待审核；存量记录在升级前直接参与排名，
+    // 因此迁移为「已采用」，复核信息留空，避免升级后名次突变。
+    this.version(DB_VERSION)
+      .stores({
+        sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
+        factors: '++id, siteId, status, assessedAt, assessor',
+        profiles: '++id, name, season, active, updatedAt',
+        vetos: '++id, siteId, type, judgedAt'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('factors')
+          .toCollection()
+          .modify((f: Partial<FactorAssessment>) => {
+            if (f.status !== 'adopted' && f.status !== 'pending' && f.status !== 'rejected') {
+              f.status = 'adopted'
+            }
+            if (typeof f.reviewer !== 'string') f.reviewer = ''
+            if (typeof f.reviewComment !== 'string') f.reviewComment = ''
+            if (typeof f.reviewedAt !== 'string') f.reviewedAt = ''
           })
       })
   }
@@ -263,7 +287,11 @@ function seedFactors(): FactorAssessment[] {
       distanceToCar: 12,
       distanceToTrail: 40,
       assessor: '李营',
-      assessedAt: '2024-04-06'
+      assessedAt: '2024-04-06',
+      status: 'adopted',
+      reviewer: '周勘',
+      reviewComment: '现场实测，已采用为基线数据。',
+      reviewedAt: SEED_TS
     },
     {
       id: 2,
@@ -278,7 +306,11 @@ function seedFactors(): FactorAssessment[] {
       distanceToCar: 260,
       distanceToTrail: 35,
       assessor: '李营',
-      assessedAt: '2024-04-06'
+      assessedAt: '2024-04-06',
+      status: 'adopted',
+      reviewer: '周勘',
+      reviewComment: '现场实测，已采用为基线数据。',
+      reviewedAt: SEED_TS
     },
     {
       id: 3,
@@ -293,7 +325,11 @@ function seedFactors(): FactorAssessment[] {
       distanceToCar: 30,
       distanceToTrail: 120,
       assessor: '周勘',
-      assessedAt: '2024-04-08'
+      assessedAt: '2024-04-08',
+      status: 'adopted',
+      reviewer: '李营',
+      reviewComment: '坝顶风大，数值复核无误。',
+      reviewedAt: SEED_TS
     },
     {
       id: 4,
@@ -308,7 +344,11 @@ function seedFactors(): FactorAssessment[] {
       distanceToCar: 480,
       distanceToTrail: 60,
       assessor: '周勘',
-      assessedAt: '2024-04-08'
+      assessedAt: '2024-04-08',
+      status: 'adopted',
+      reviewer: '李营',
+      reviewComment: '落石风险确认，维持高风险判定。',
+      reviewedAt: SEED_TS
     },
     {
       id: 5,
@@ -323,7 +363,11 @@ function seedFactors(): FactorAssessment[] {
       distanceToCar: 340,
       distanceToTrail: 25,
       assessor: '陈巡',
-      assessedAt: '2024-04-10'
+      assessedAt: '2024-04-10',
+      status: 'adopted',
+      reviewer: '周勘',
+      reviewComment: '林内信号偏弱属实，予以采用。',
+      reviewedAt: SEED_TS
     },
     {
       id: 6,
@@ -338,7 +382,11 @@ function seedFactors(): FactorAssessment[] {
       distanceToCar: 55,
       distanceToTrail: 90,
       assessor: '陈巡',
-      assessedAt: '2024-04-10'
+      assessedAt: '2024-04-10',
+      status: 'adopted',
+      reviewer: '周勘',
+      reviewComment: '距水过近，配合否决项保留该评估。',
+      reviewedAt: SEED_TS
     }
   ]
   return rows.map((r) => ({ ...r, createdAt: SEED_TS, updatedAt: SEED_TS }))

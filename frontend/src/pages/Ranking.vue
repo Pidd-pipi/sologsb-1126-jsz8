@@ -38,7 +38,7 @@ const inputSites = computed(() =>
 
 const { ranked } = useRanking({
   sites: () => inputSites.value,
-  factorOf: (siteId: number) => siteStore.latestFactor(siteId),
+  factorOf: (siteId: number) => siteStore.adoptedFactor(siteId),
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
@@ -99,6 +99,15 @@ function openDetail(siteId: number | undefined): void {
       </div>
     </div>
 
+    <el-alert
+      v-if="siteStore.pendingCount > 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="pending-alert"
+      :title="`有 ${siteStore.pendingCount} 轮现场评估待审核，名次表仍按最近一份已采用记录计算，待审核数据不会影响当前排名。`"
+    />
+
     <div class="stat-row">
       <div class="stat-card">
         <div class="stat-card__label">候选营位</div>
@@ -116,6 +125,13 @@ function openDetail(siteId: number | undefined): void {
           {{ stats.vetoed }}
         </div>
         <div class="stat-card__extra">否决后禁止评 A</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card__label">待审核评估</div>
+        <div class="stat-card__value" :style="{ color: siteStore.pendingCount ? '#d97706' : undefined }">
+          {{ siteStore.pendingCount }}
+        </div>
+        <div class="stat-card__extra">采用后才参与算分</div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">最高综合得分</div>
@@ -220,7 +236,7 @@ function openDetail(siteId: number | undefined): void {
         <el-table-column label="风力" width="88" align="right">
           <template #default="{ row }">
             {{ row.raw.wind }} 级
-            <div class="cell-sub">{{ siteStore.latestFactor(row.siteId)?.windDir ?? '—' }}向</div>
+            <div class="cell-sub">{{ siteStore.adoptedFactor(row.siteId)?.windDir ?? '—' }}向</div>
           </template>
         </el-table-column>
         <el-table-column label="日照" width="86" align="right">
@@ -267,6 +283,9 @@ function openDetail(siteId: number | undefined): void {
 </template>
 
 <style scoped>
+.pending-alert {
+  margin-bottom: 12px;
+}
 .rank-no {
   display: inline-flex;
   align-items: center;

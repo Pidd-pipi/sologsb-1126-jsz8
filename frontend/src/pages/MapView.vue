@@ -42,7 +42,7 @@ const visibleSites = computed(() =>
 
 const { ranked, scoreOf } = useRanking({
   sites: () => siteStore.list,
-  factorOf: (id: number) => siteStore.latestFactor(id),
+  factorOf: (id: number) => siteStore.adoptedFactor(id),
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
@@ -245,12 +245,12 @@ const gradeStats = computed(() => {
           <span>{{ nearest ? `${nearest.code} · ${formatDistance(nearest.meters)}` : '唯一营位' }}</span>
         </div>
         <div class="detail-item">
-          <span class="detail-item__label">最近评估</span>
+          <span class="detail-item__label">已采用评估</span>
           <span>
             {{
-              siteStore.latestFactor(selectedSite.id)
-                ? `${formatDate(siteStore.latestFactor(selectedSite.id)?.assessedAt ?? '')} · ${siteStore.latestFactor(selectedSite.id)?.assessor}`
-                : '暂无评估'
+              siteStore.adoptedFactor(selectedSite.id)
+                ? `${formatDate(siteStore.adoptedFactor(selectedSite.id)?.assessedAt ?? '')} · ${siteStore.adoptedFactor(selectedSite.id)?.assessor}`
+                : '暂无（按缺省值保守算分）'
             }}
           </span>
         </div>

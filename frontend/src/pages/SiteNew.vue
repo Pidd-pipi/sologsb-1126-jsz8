@@ -13,7 +13,7 @@ import { useProfileStore } from '@/stores/profileStore'
 import { useLocalDraft } from '@/hooks/useLocalDraft'
 import { ASPECT_TYPES, SURFACE_TYPES, ACCESS_MODES } from '@/types/campsite'
 import type { AspectType, Campsite, SurfaceType, AccessMode } from '@/types/campsite'
-import type { FactorAssessment, RockfallRisk, WindDir, WindForce } from '@/types/factor'
+import type { FactorAssessmentInput, RockfallRisk, WindDir, WindForce } from '@/types/factor'
 import { ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
 import { FACTOR_META, DEFAULT_WEIGHTS } from '@/types/score'
 import type { FactorKey, FactorWeights } from '@/types/score'
@@ -176,7 +176,11 @@ const previewSite = computed<Campsite>(() => ({
   updatedAt: ''
 }))
 
-const previewFactor = computed<FactorAssessment>(() => ({
+/**
+ * 预览与新营位共用的因子原始值来源。
+ * 新营位的第一轮评估同样要走待审核，因此预览只用于预估、不代表已采用数据。
+ */
+const previewFactor = computed<FactorAssessmentInput>(() => ({
   siteId: 0,
   waterDistance: Number(factor.waterDistance),
   windDir: factor.windDir,
@@ -208,7 +212,7 @@ const previewRaw = computed(() => rawValuesOf(previewSite.value, previewFactor.v
 const previewMatrix = computed(() => {
   const entries = siteStore.list
     .filter((s): s is typeof s & { id: number } => typeof s.id === 'number')
-    .map((s) => ({ siteId: s.id, values: rawValuesOf(s, siteStore.latestFactor(s.id)) }))
+    .map((s) => ({ siteId: s.id, values: rawValuesOf(s, siteStore.adoptedFactor(s.id)) }))
   entries.push({ siteId: 0, values: previewRaw.value })
   return buildNormalizedMatrix(entries, previewNormalize.value)
 })
@@ -285,7 +289,7 @@ async function submit(): Promise<void> {
       updatedAt: ''
     })
     draft.clear()
-    ElMessage.success('营位已登记，正在跳转详情')
+    ElMessage.success('营位已登记，首轮评估进入待审核，采用后才会进入名次计算')
     await router.push(`/sites/${id}`)
   } catch (err) {
     ElMessage.error(`保存失败：${err instanceof Error ? err.message : String(err)}`)
@@ -441,7 +445,7 @@ async function submit(): Promise<void> {
         />
       </el-form-item>
 
-      <el-divider content-position="left">因子实测（第一轮评估）</el-divider>
+      <el-divider content-position="left">因子实测（第一轮评估，提交后待审核）</el-divider>
 
       <div class="form-grid">
         <el-form-item label="水源距离（m）">
