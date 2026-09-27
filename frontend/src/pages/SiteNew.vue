@@ -189,6 +189,10 @@ const previewFactor = computed<FactorAssessment>(() => ({
   distanceToTrail: Number(factor.distanceToTrail),
   assessor: factor.assessor,
   assessedAt: factor.assessedAt,
+  status: 'pending',
+  reviewer: '',
+  reviewComment: '',
+  reviewedAt: '',
   createdAt: '',
   updatedAt: ''
 }))
@@ -281,11 +285,15 @@ async function submit(): Promise<void> {
       distanceToTrail: Number(factor.distanceToTrail),
       assessor: factor.assessor.trim() || '未署名',
       assessedAt: factor.assessedAt || todayIso(),
+      status: 'pending',
+      reviewer: '',
+      reviewComment: '',
+      reviewedAt: '',
       createdAt: '',
       updatedAt: ''
     })
     draft.clear()
-    ElMessage.success('营位已登记，正在跳转详情')
+    ElMessage.success('营位已登记，首轮评估进入待审核，复核采用后才参与名次')
     await router.push(`/sites/${id}`)
   } catch (err) {
     ElMessage.error(`保存失败：${err instanceof Error ? err.message : String(err)}`)
@@ -549,7 +557,8 @@ async function submit(): Promise<void> {
       <div class="panel__head">
         <h2>实时评分预览</h2>
         <span class="weight-note">
-          按当前方案「{{ profileStore.activeProfile?.name ?? '—' }}」预估，保存后进入名次表
+          按当前方案「{{ profileStore.activeProfile?.name ?? '—' }}」预估；
+          保存后首轮评估进入待审核，复核采用前名次按保守缺省值计算
         </span>
       </div>
       <div class="preview-head">

@@ -23,7 +23,7 @@ import {
 export interface RankingInput {
   /** 参与排名的营位集合 */
   sites: () => Campsite[]
-  /** siteId -> 用于评分的因子记录（通常取最新一轮评估） */
+  /** siteId -> 用于评分的因子记录（取最近一份已采用评估；无已采用记录时评分层按保守缺省值处理） */
   factorOf: (siteId: number) => FactorAssessment | null
   weights: () => FactorWeights
   normalize: () => NormalizeMethod

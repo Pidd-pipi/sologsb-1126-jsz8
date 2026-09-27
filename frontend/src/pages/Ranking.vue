@@ -164,7 +164,7 @@ function openDetail(siteId: number | undefined): void {
     <section class="panel">
       <div class="panel__head">
         <h2>名次与得分</h2>
-        <span class="weight-note">共 {{ ranked.length }} 行</span>
+        <span class="weight-note">共 {{ ranked.length }} 行 · 因子取各营位最近一份已采用评估</span>
       </div>
 
       <el-table

@@ -5,6 +5,7 @@
  *   v1 建 sites / factors 两张表
  *   v2 新增 profiles 表，并为 factors 补 siteId 索引
  *   v3 新增 vetos 表，并为存量营位回填默认权重方案
+ *   v4 因子评估引入审核状态（待审核/已采用/已退回），存量记录迁移为已采用
  */
 import Dexie, { type Table } from 'dexie'
 import type { Campsite } from '@/types/campsite'
@@ -15,7 +16,7 @@ import type { RiskVeto } from '@/types/veto'
 
 export const DB_NAME = 'gbcampsite-db'
 /** 当前数据结构版本号 */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 
 export class GbCampsiteDatabase extends Dexie {
   sites!: Table<Campsite, number>
@@ -53,7 +54,7 @@ export class GbCampsiteDatabase extends Dexie {
       })
 
     // v3：新增风险否决表；为存量营位回填默认方案 id 与新增字段缺省值
-    this.version(DB_VERSION)
+    this.version(3)
       .stores({
         sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
         factors: '++id, siteId, assessedAt, assessor',
@@ -72,6 +73,32 @@ export class GbCampsiteDatabase extends Dexie {
             if (typeof s.note !== 'string') s.note = ''
             if (typeof s.flatness !== 'number') s.flatness = 70
             if (typeof s.tentCapacity !== 'number') s.tentCapacity = 1
+          })
+      })
+
+    // v4：因子评估加审核状态索引；存量记录视为已采用，保持既有名次不变
+    this.version(DB_VERSION)
+      .stores({
+        sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
+        factors: '++id, siteId, assessedAt, assessor, status',
+        profiles: '++id, name, season, active, updatedAt',
+        vetos: '++id, siteId, type, judgedAt'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('factors')
+          .toCollection()
+          .modify((f: Partial<FactorAssessment>) => {
+            if (f.status !== 'pending' && f.status !== 'adopted' && f.status !== 'returned') {
+              f.status = 'adopted'
+              f.reviewer = typeof f.reviewer === 'string' ? f.reviewer : ''
+              f.reviewComment =
+                typeof f.reviewComment === 'string' ? f.reviewComment : '存量数据迁移，默认采用'
+              f.reviewedAt =
+                typeof f.reviewedAt === 'string' && f.reviewedAt
+                  ? f.reviewedAt
+                  : f.updatedAt ?? f.createdAt ?? ''
+            }
           })
       })
   }
@@ -249,7 +276,9 @@ function seedSites(): Campsite[] {
 }
 
 function seedFactors(): FactorAssessment[] {
-  const rows: Array<Omit<FactorAssessment, 'createdAt' | 'updatedAt'>> = [
+  const rows: Array<
+    Omit<FactorAssessment, 'status' | 'reviewer' | 'reviewComment' | 'reviewedAt' | 'createdAt' | 'updatedAt'>
+  > = [
     {
       id: 1,
       siteId: 1,
@@ -341,7 +370,16 @@ function seedFactors(): FactorAssessment[] {
       assessedAt: '2024-04-10'
     }
   ]
-  return rows.map((r) => ({ ...r, createdAt: SEED_TS, updatedAt: SEED_TS }))
+  // 样例数据直接置为已采用，保证首次运行时名次表、地图与详情页有分可算
+  return rows.map((r) => ({
+    ...r,
+    status: 'adopted',
+    reviewer: '陈巡',
+    reviewComment: '样例数据，默认采用',
+    reviewedAt: SEED_TS,
+    createdAt: SEED_TS,
+    updatedAt: SEED_TS
+  }))
 }
 
 function seedVetos(): RiskVeto[] {

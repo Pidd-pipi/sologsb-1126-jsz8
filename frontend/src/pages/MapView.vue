@@ -245,12 +245,12 @@ const gradeStats = computed(() => {
           <span>{{ nearest ? `${nearest.code} · ${formatDistance(nearest.meters)}` : '唯一营位' }}</span>
         </div>
         <div class="detail-item">
-          <span class="detail-item__label">最近评估</span>
+          <span class="detail-item__label">已采用评估</span>
           <span>
             {{
               siteStore.latestFactor(selectedSite.id)
                 ? `${formatDate(siteStore.latestFactor(selectedSite.id)?.assessedAt ?? '')} · ${siteStore.latestFactor(selectedSite.id)?.assessor}`
-                : '暂无评估'
+                : '暂无（按缺省值评分）'
             }}
           </span>
         </div>

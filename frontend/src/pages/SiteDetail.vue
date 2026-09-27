@@ -18,8 +18,8 @@ import { FACTOR_META, NORMALIZE_LABELS } from '@/types/score'
 import { ASPECT_TYPES, SURFACE_TYPES, ACCESS_MODES } from '@/types/campsite'
 import type { AspectType, AccessMode, SurfaceType } from '@/types/campsite'
 import type { Grade } from '@/utils/score'
-import type { RockfallRisk, WindDir, WindForce } from '@/types/factor'
-import { ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
+import type { FactorAssessment, ReviewStatus, RockfallRisk, WindDir, WindForce } from '@/types/factor'
+import { REVIEW_STATUS_LABEL, ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
 import { VETO_TYPES, VETO_HINTS } from '@/types/veto'
 import type { VetoType } from '@/types/veto'
 import { formatDate, formatDateTime, todayIso } from '@/utils/format'
@@ -55,6 +55,8 @@ function openSite(id: number): void {
 }
 const grade = computed(() => scoreRow.value?.grade ?? 'C')
 const factorHistory = computed(() => siteStore.factorsOf(siteId.value))
+const adoptedFactor = computed(() => siteStore.latestFactor(siteId.value))
+const pendingCount = computed(() => siteStore.pendingCountOf(siteId.value))
 const vetoList = computed(() => uiStore.vetosOf(siteId.value))
 
 /* --------------------------- 多轮因子复核录入 --------------------------- */
@@ -74,6 +76,7 @@ const factorForm = reactive({
 })
 
 function prefillFactor(): void {
+  // 预填最近一份已采用记录，未采用的待审核数据不带入新表单
   const latest = siteStore.latestFactor(siteId.value)
   if (latest) {
     factorForm.waterDistance = latest.waterDistance
@@ -106,22 +109,75 @@ async function submitFactor(): Promise<void> {
       distanceToTrail: Number(factorForm.distanceToTrail),
       assessor: factorForm.assessor.trim() || '未署名',
       assessedAt: factorForm.assessedAt || todayIso(),
+      status: 'pending',
+      reviewer: '',
+      reviewComment: '',
+      reviewedAt: '',
       createdAt: '',
       updatedAt: ''
     })
     showFactorForm.value = false
-    ElMessage.success('已追加一轮因子评估，名次与等级同步刷新')
+    ElMessage.success('已提交一轮评估，进入待审核；复核采用前名次、地图与评分保持不变')
   } catch (err) {
-    ElMessage.error(`追加失败：${err instanceof Error ? err.message : String(err)}`)
+    ElMessage.error(`提交失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+/* ------------------------------ 复核（采用 / 退回） ------------------------------ */
+const reviewDialog = ref(false)
+const reviewTarget = ref<FactorAssessment | null>(null)
+const reviewDecision = ref<'adopted' | 'returned'>('adopted')
+const reviewForm = reactive({ reviewer: '', comment: '' })
+const reviewSubmitting = ref(false)
+
+function openReview(row: FactorAssessment, decision: 'adopted' | 'returned'): void {
+  reviewTarget.value = row
+  reviewDecision.value = decision
+  reviewForm.reviewer = ''
+  reviewForm.comment = ''
+  reviewDialog.value = true
+}
+
+async function confirmReview(): Promise<void> {
+  const row = reviewTarget.value
+  if (!row || typeof row.id !== 'number') return
+  if (!reviewForm.reviewer.trim()) {
+    ElMessage.warning('请填写审核人')
+    return
+  }
+  if (!reviewForm.comment.trim()) {
+    ElMessage.warning('请填写审核意见')
+    return
+  }
+  reviewSubmitting.value = true
+  try {
+    await siteStore.reviewFactor(
+      row.id,
+      reviewDecision.value,
+      reviewForm.reviewer,
+      reviewForm.comment
+    )
+    reviewDialog.value = false
+    ElMessage.success(
+      reviewDecision.value === 'adopted'
+        ? '已采用该轮评估，名次、地图与详情评分同步刷新；原采用记录保留为历史'
+        : '已退回该轮评估，仅保留在历史记录中，不参与评分'
+    )
+  } catch (err) {
+    ElMessage.error(`复核失败：${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    reviewSubmitting.value = false
   }
 }
 
 async function removeFactor(id: number | undefined): Promise<void> {
   if (typeof id !== 'number') return
   try {
-    await ElMessageBox.confirm('确认删除这一轮因子评估？删除后名次会立即重算。', '提示', {
-      type: 'warning'
-    })
+    await ElMessageBox.confirm(
+      '确认删除这一轮因子评估？若删除的是已采用记录，名次会立即按保守缺省值重算。',
+      '提示',
+      { type: 'warning' }
+    )
     await siteStore.removeFactor(id)
     ElMessage.success('已删除该轮评估')
   } catch {
@@ -289,7 +345,9 @@ watch(
       <div class="stat-card">
         <div class="stat-card__label">评估轮次</div>
         <div class="stat-card__value">{{ factorHistory.length }}</div>
-        <div class="stat-card__extra">否决项 {{ vetoList.length }} 条</div>
+        <div class="stat-card__extra">
+          待审核 {{ pendingCount }} 轮 · 否决项 {{ vetoList.length }} 条
+        </div>
       </div>
     </div>
 
@@ -397,14 +455,24 @@ watch(
         />
       </div>
       <p class="panel__hint">
-        当前名次所用因子来自最新一轮评估（{{ siteStore.latestFactor(siteId)?.assessedAt ?? '暂无' }}，
-        评估人 {{ siteStore.latestFactor(siteId)?.assessor ?? '—' }}）。
+        <template v-if="adoptedFactor">
+          当前名次采用已审核通过的评估（{{ adoptedFactor.assessedAt }}，评估人
+          {{ adoptedFactor.assessor }}<template v-if="adoptedFactor.reviewer">
+            ，审核人 {{ adoptedFactor.reviewer }}</template
+          >）；待审核与已退回的记录不参与计算。
+        </template>
+        <template v-else>
+          暂无已采用的评估记录，当前按保守缺省值评分；新提交的评估需复核采用后才会参与名次计算。
+        </template>
       </p>
     </section>
 
     <section class="panel">
       <div class="panel__head">
         <h2>多轮因子复核</h2>
+        <span v-if="pendingCount" class="weight-note pending-note">
+          {{ pendingCount }} 轮待审核，复核采用前不影响名次
+        </span>
         <el-button
           size="small"
           type="primary"
@@ -518,42 +586,79 @@ watch(
       </el-form>
 
       <el-table v-if="factorHistory.length" :data="factorHistory" size="small" border>
-        <el-table-column label="序号" width="64" type="index" />
-        <el-table-column prop="assessedAt" label="评估日期" width="118">
+        <el-table-column label="序号" width="58" type="index" />
+        <el-table-column prop="assessedAt" label="评估日期" width="104">
           <template #default="{ row }">{{ formatDate(row.assessedAt) }}</template>
         </el-table-column>
-        <el-table-column prop="assessor" label="评估人" width="110" />
-        <el-table-column label="水源" width="90">
+        <el-table-column prop="assessor" label="评估人" width="90" />
+        <el-table-column label="状态" width="118">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.status === 'adopted' ? 'success' : row.status === 'pending' ? 'warning' : 'info'"
+            >
+              {{ REVIEW_STATUS_LABEL[row.status as ReviewStatus] ?? row.status }}
+            </el-tag>
+            <el-tag
+              v-if="row.status === 'adopted' && row.id === adoptedFactor?.id"
+              size="small"
+              effect="plain"
+              class="ml4"
+            >
+              计分中
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="水源" width="86">
           <template #default="{ row }">{{ row.waterDistance }} m</template>
         </el-table-column>
-        <el-table-column label="风向 / 风力" width="130">
+        <el-table-column label="风向 / 风力" width="120">
           <template #default="{ row }">{{ row.windDir }} {{ row.windForce }} 级</template>
         </el-table-column>
-        <el-table-column label="信号" width="80">
+        <el-table-column label="信号" width="70">
           <template #default="{ row }">{{ row.signalBars }} 格</template>
         </el-table-column>
-        <el-table-column label="日照" width="86">
+        <el-table-column label="日照" width="76">
           <template #default="{ row }">{{ row.sunHours }} h</template>
         </el-table-column>
-        <el-table-column label="落石落枝" width="100">
+        <el-table-column label="落石落枝" width="90">
           <template #default="{ row }">{{ row.rockfallRisk }}</template>
         </el-table-column>
-        <el-table-column label="遮蔽度" width="88">
+        <el-table-column label="遮蔽度" width="80">
           <template #default="{ row }">{{ row.shade }}</template>
         </el-table-column>
-        <el-table-column label="离车 / 离步道" width="140">
+        <el-table-column label="离车 / 离步道" width="130">
           <template #default="{ row }">{{ row.distanceToCar }} / {{ row.distanceToTrail }} m</template>
+        </el-table-column>
+        <el-table-column label="审核人 / 意见" min-width="170">
+          <template #default="{ row }">
+            <template v-if="row.status !== 'pending'">
+              <span>{{ row.reviewer || '—' }}</span>
+              <div class="cell-sub">{{ row.reviewComment || '无意见' }}</div>
+            </template>
+            <span v-else class="muted">待复核</span>
+          </template>
         </el-table-column>
         <el-table-column label="录入时间" width="150">
           <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="168" fixed="right">
           <template #default="{ row }">
+            <template v-if="row.status === 'pending'">
+              <el-button size="small" text type="success" @click="openReview(row, 'adopted')">
+                采用
+              </el-button>
+              <el-button size="small" text type="warning" @click="openReview(row, 'returned')">
+                退回
+              </el-button>
+            </template>
             <el-button size="small" text type="danger" @click="removeFactor(row.id)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
-      <p v-else class="panel__hint">暂无因子评估记录，点击「追加一轮评估」开始录入。</p>
+      <p v-else class="panel__hint">
+        暂无因子评估记录，点击「追加一轮评估」开始录入；新记录先进入待审核，复核采用后才参与名次计算。
+      </p>
     </section>
 
     <section class="panel">
@@ -616,6 +721,55 @@ watch(
         </el-form-item>
       </el-form>
     </section>
+
+    <el-dialog
+      v-model="reviewDialog"
+      :title="reviewDecision === 'adopted' ? '采用该轮评估' : '退回该轮评估'"
+      width="480px"
+    >
+      <el-alert
+        :type="reviewDecision === 'adopted' ? 'success' : 'warning'"
+        :closable="false"
+        show-icon
+        :title="
+          reviewDecision === 'adopted'
+            ? '采用后该轮评估立即参与名次、地图与详情评分，原采用记录保留为历史'
+            : '退回后该轮评估仅保留在历史记录中，不参与任何评分'
+        "
+        :description="
+          reviewTarget
+            ? `评估日期 ${reviewTarget.assessedAt} · 评估人 ${reviewTarget.assessor}`
+            : ''
+        "
+        style="margin-bottom: 14px"
+      />
+      <el-form label-width="90px" @submit.prevent>
+        <el-form-item label="审核人" required>
+          <el-input id="review-reviewer" v-model="reviewForm.reviewer" placeholder="如 周勘" />
+        </el-form-item>
+        <el-form-item label="审核意见" required>
+          <el-input
+            id="review-comment"
+            v-model="reviewForm.comment"
+            type="textarea"
+            :rows="3"
+            :placeholder="
+              reviewDecision === 'adopted' ? '如 数据与现场一致，同意采用' : '如 水源距离存疑，需复测'
+            "
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reviewDialog = false">取消</el-button>
+        <el-button
+          :type="reviewDecision === 'adopted' ? 'success' : 'warning'"
+          :loading="reviewSubmitting"
+          @click="confirmReview"
+        >
+          {{ reviewDecision === 'adopted' ? '确认采用' : '确认退回' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 
   <div v-else class="page">
@@ -646,5 +800,18 @@ watch(
 }
 .review-form {
   margin-bottom: 12px;
+}
+.pending-note {
+  color: #b45309;
+}
+.cell-sub {
+  font-size: 11px;
+  color: var(--gb-muted);
+}
+.ml4 {
+  margin-left: 4px;
+}
+.muted {
+  color: var(--gb-muted);
 }
 </style>
